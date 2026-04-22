@@ -1,14 +1,8 @@
 """
 Least squares adjustment algorithm (Gauss-Markov model).
 
-Implements the parametric adjustment (Gauss-Markov model):
+Implements the parametric adjustment:
     l + v = A * x̂
-
-where:
-    l = reduced observations (l - l0)
-    v = residuals
-    A = design matrix (Jacobian)
-    x̂ = estimated parameter corrections
 
 The solution minimizes v'Pv (weighted sum of squared residuals).
 """
@@ -27,19 +21,6 @@ from openadjust.core.statistics import global_model_test, compute_sigma_0
 class AdjustmentResult:
     """
     Contains all results from a least squares adjustment.
-
-    Attributes:
-        converged: True if adjustment converged successfully
-        iterations: Number of iterations performed
-        sigma_0: A posteriori standard deviation of unit weight
-        adjusted_coords: Dictionary of adjusted coordinates
-        residuals: Vector of residuals
-        Qxx: Cofactor matrix of adjusted parameters
-        design_matrix: The final design matrix A
-        weight_matrix: The weight matrix P
-        redundancy: Degrees of freedom (n - u)
-        test_statistic: Chi-square test statistic
-        test_passed: True if global model test passed
     """
 
     converged: bool = False
@@ -61,6 +42,9 @@ class AdjustmentResult:
     weight_matrix: Optional[np.ndarray] = None
     normal_matrix: Optional[np.ndarray] = None
 
+    # Cofactor matrix of residuals
+    Qvv: Optional[np.ndarray] = None
+
     # Statistics
     redundancy: int = 0
     vPv: float = 0.0
@@ -77,55 +61,67 @@ class AdjustmentResult:
 
     def get_point_std(self, point_id: str) -> Optional[tuple[float, float, float]]:
         """
-        Returns standard deviations for a point (sx, sy, sz) in meters.
-
-        Args:
-            point_id: ID of the point
-
-        Returns:
-            Tuple (std_x, std_y, std_z) or None if not available
+        Returns standard deviations for a point (sx, sy, sz).
         """
         if self.Qxx is None or not self.param_index:
             return None
 
-        std_x = std_y = std_z = None
+        std_x = std_y = std_z = 0.0
 
         if f"{point_id}_x" in self.param_index:
             idx = self.param_index[f"{point_id}_x"]
-            std_x = self.sigma_0 * np.sqrt(self.Qxx[idx, idx])
+            std_x = self.sigma_0 * np.sqrt(abs(self.Qxx[idx, idx]))
 
         if f"{point_id}_y" in self.param_index:
             idx = self.param_index[f"{point_id}_y"]
-            std_y = self.sigma_0 * np.sqrt(self.Qxx[idx, idx])
+            std_y = self.sigma_0 * np.sqrt(abs(self.Qxx[idx, idx]))
 
         if f"{point_id}_z" in self.param_index:
             idx = self.param_index[f"{point_id}_z"]
-            std_z = self.sigma_0 * np.sqrt(self.Qxx[idx, idx])
+            std_z = self.sigma_0 * np.sqrt(abs(self.Qxx[idx, idx]))
 
-        if std_x is None and std_y is None and std_z is None:
+        if std_x == 0 and std_y == 0 and std_z == 0:
             return None
 
-        return (std_x or 0.0, std_y or 0.0, std_z or 0.0)
+        return (std_x, std_y, std_z)
 
     def get_helmert_point_error(self, point_id: str) -> Optional[float]:
         """
         Returns Helmert's point position error (sH) for a point.
-
-        sH = sqrt(sx² + sy²) for 2D
-        sH = sqrt(sx² + sy² + sz²) for 3D
-
-        Args:
-            point_id: ID of the point
-
-        Returns:
-            Helmert point error in meters, or None if not available
         """
         stds = self.get_point_std(point_id)
         if stds is None:
             return None
 
         sx, sy, sz = stds
-        return np.sqrt(sx ** 2 + sy ** 2 + sz ** 2)
+        # For 2D: only sx and sy
+        if sz == 0:
+            return np.sqrt(sx**2 + sy**2)
+        return np.sqrt(sx**2 + sy**2 + sz**2)
+
+    def get_residual_for_observation(self, obs_index: int) -> Optional[float]:
+        """Returns the residual for a specific observation."""
+        if self.residuals is None or obs_index >= len(self.residuals):
+            return None
+        return self.residuals[obs_index]
+
+    def get_normalized_residual(self, obs_index: int) -> Optional[float]:
+        """
+        Returns the normalized residual for outlier detection.
+        w = v / (σ₀ * sqrt(qvv))
+        """
+        if self.residuals is None or self.Qvv is None:
+            return None
+        if obs_index >= len(self.residuals):
+            return None
+
+        v = self.residuals[obs_index]
+        qvv = self.Qvv[obs_index, obs_index]
+
+        if qvv <= 0 or self.sigma_0 <= 0:
+            return None
+
+        return v / (self.sigma_0 * np.sqrt(qvv))
 
 
 class LeastSquaresAdjustment:
@@ -140,32 +136,31 @@ class LeastSquaresAdjustment:
         A = design matrix (Jacobian)
         x̂ = parameter corrections
 
-    The stochastic model is defined by the weight matrix P = σ₀² * Qll⁻¹
-
     Solution: x̂ = (A'PA)⁻¹ A'Pl = N⁻¹ * n
-    where N = A'PA (normal equation matrix)
-          n = A'Pl (right-hand side)
     """
 
     def __init__(self, network: Network, max_iterations: int = 10,
                  convergence_threshold: float = 1e-10,
                  sigma_0_apriori: float = 1.0,
-                 significance_level: float = 0.05):
+                 significance_level: float = 0.05,
+                 verbose: bool = True):
         """
         Initialize the adjustment.
 
         Args:
             network: The geodetic network to adjust
             max_iterations: Maximum number of iterations
-            convergence_threshold: Convergence criterion (max coordinate change in meters)
+            convergence_threshold: Convergence criterion (max coordinate change)
             sigma_0_apriori: A priori standard deviation of unit weight
             significance_level: Significance level for statistical tests
+            verbose: If True, print progress information
         """
         self.network = network
         self.max_iterations = max_iterations
         self.convergence_threshold = convergence_threshold
         self.sigma_0_apriori = sigma_0_apriori
         self.significance_level = significance_level
+        self.verbose = verbose
         self.result = AdjustmentResult()
 
     def run(self) -> AdjustmentResult:
@@ -185,30 +180,33 @@ class LeastSquaresAdjustment:
         # Check for sufficient observations
         redundancy = n_obs - n_params
         if redundancy < 0:
-            print(f"Error: Not enough observations. n={n_obs}, u={n_params}, r={redundancy}")
+            if self.verbose:
+                print(f"Error: Not enough observations. n={n_obs}, u={n_params}")
             self.result.converged = False
             return self.result
 
         self.result.redundancy = redundancy
         self.result.param_index = param_index
 
-        print(f"\n{'=' * 60}")
-        print(f"Starting Least Squares Adjustment")
-        print(f"{'=' * 60}")
-        print(f"Observations: {n_obs}")
-        print(f"Parameters: {n_params}")
-        print(f"Redundancy: {redundancy}")
-        print(f"{'=' * 60}\n")
+        if self.verbose:
+            print(f"\n{'='*60}")
+            print(f"Starting Least Squares Adjustment")
+            print(f"{'='*60}")
+            print(f"Observations: {n_obs}")
+            print(f"Parameters: {n_params}")
+            print(f"Redundancy: {redundancy}")
+            print(f"{'='*60}\n")
 
-        # Build weight matrix (constant)
+        # Build weight matrix (constant throughout iterations)
         P = self._build_weight_matrix()
         self.result.weight_matrix = P
 
         # Iterative adjustment
         for iteration in range(self.max_iterations):
-            print(f"Iteration {iteration + 1}:")
+            if self.verbose:
+                print(f"Iteration {iteration + 1}:")
 
-            # Build design matrix A
+            # Build design matrix A at current coordinates
             A = self._build_design_matrix(param_index)
 
             # Build reduced observation vector (l - l0)
@@ -222,12 +220,14 @@ class LeastSquaresAdjustment:
             try:
                 x = np.linalg.solve(N, n)
             except np.linalg.LinAlgError:
-                print("  Warning: Singular matrix, using pseudo-inverse")
+                if self.verbose:
+                    print("  Warning: Singular matrix, using pseudo-inverse")
                 x = np.linalg.lstsq(N, n, rcond=None)[0]
 
             # Calculate maximum correction
             max_correction = np.max(np.abs(x))
-            print(f"  Max correction: {max_correction * 1000:.6f} mm")
+            if self.verbose:
+                print(f"  Max correction: {max_correction*1000:.6f} mm")
 
             # Update coordinates
             self._apply_corrections(x, param_index)
@@ -241,12 +241,14 @@ class LeastSquaresAdjustment:
 
             # Check convergence
             if max_correction < self.convergence_threshold:
-                print(f"  Converged after {iteration + 1} iterations!")
+                if self.verbose:
+                    print(f"  ✓ Converged after {iteration + 1} iterations!")
                 self.result.converged = True
                 self.result.iterations = iteration + 1
                 break
         else:
-            print(f"  Warning: Did not converge after {self.max_iterations} iterations")
+            if self.verbose:
+                print(f"  ⚠ Did not converge after {self.max_iterations} iterations")
             self.result.converged = False
             self.result.iterations = self.max_iterations
 
@@ -254,16 +256,15 @@ class LeastSquaresAdjustment:
         A = self._build_design_matrix(param_index)
         l = self._build_observation_vector()
 
-        # Residuals: v = A*x - l (but x≈0 after convergence, so v ≈ -l)
-        # More precisely: v = l_observed - l_computed = -(l0 - l_observed) after adjustment
-        v = A @ x - l  # This gives small residuals after convergence
+        # Normal equation matrix (final)
+        N = A.T @ P @ A
 
-        # Actually, residuals should be: v = l_adjusted - l_observed
-        # Let's recalculate properly
+        # Residuals: v = A*x - l (x≈0 after convergence)
+        # More accurate: recalculate from adjusted coordinates
         v = self._compute_residuals()
 
         # Weighted sum of squared residuals
-        vPv = v.T @ P @ v
+        vPv = float(v.T @ P @ v)
 
         # A posteriori standard deviation of unit weight
         if redundancy > 0:
@@ -277,6 +278,11 @@ class LeastSquaresAdjustment:
         except np.linalg.LinAlgError:
             Qxx = np.linalg.pinv(N)
 
+        # Cofactor matrix of residuals: Qvv = Qll - A*Qxx*A'
+        # where Qll = P⁻¹
+        Qll = np.diag(1.0 / np.diag(P))
+        Qvv = Qll - A @ Qxx @ A.T
+
         # Global model test
         test_passed, test_stat, lower, upper = global_model_test(
             vPv, redundancy, self.sigma_0_apriori, self.significance_level
@@ -289,18 +295,20 @@ class LeastSquaresAdjustment:
         self.result.design_matrix = A
         self.result.normal_matrix = N
         self.result.Qxx = Qxx
+        self.result.Qvv = Qvv
         self.result.corrections = x
-        self.result.test_passed = test_passed
-        self.result.test_statistic = test_stat
-        self.result.test_critical_lower = lower
-        self.result.test_critical_upper = upper
+        self.result.test_passed = bool(test_passed)
+        self.result.test_statistic = float(test_stat)
+        self.result.test_critical_lower = float(lower)
+        self.result.test_critical_upper = float(upper)
 
         # Store adjusted coordinates
         for point_id, point in self.network.points.items():
             self.result.adjusted_coords[point_id] = (point.x, point.y, point.z)
 
         # Print summary
-        self._print_summary()
+        if self.verbose:
+            self._print_summary()
 
         return self.result
 
@@ -330,12 +338,7 @@ class LeastSquaresAdjustment:
         return P
 
     def _build_observation_vector(self) -> np.ndarray:
-        """
-        Builds the reduced observation vector (l - l0).
-
-        l = measured value
-        l0 = computed value from current coordinates
-        """
+        """Builds the reduced observation vector (l - l0)."""
         observations = self.network.get_enabled_observations()
 
         l = np.zeros(len(observations))
@@ -347,17 +350,13 @@ class LeastSquaresAdjustment:
         return l
 
     def _compute_residuals(self) -> np.ndarray:
-        """
-        Computes residuals v = l_computed - l_observed.
-
-        After adjustment, l_computed should be close to l_observed.
-        """
+        """Computes residuals v = l_computed - l_observed."""
         observations = self.network.get_enabled_observations()
 
         v = np.zeros(len(observations))
 
         for i, obs in enumerate(observations):
-            l_computed = obs.compute_l0(self.network)  # From adjusted coordinates
+            l_computed = obs.compute_l0(self.network)
             l_observed = obs.value
             v[i] = l_computed - l_observed
 
@@ -366,6 +365,10 @@ class LeastSquaresAdjustment:
     def _apply_corrections(self, x: np.ndarray, param_index: dict[str, int]) -> None:
         """Applies parameter corrections to the network coordinates."""
         for param_name, idx in param_index.items():
+            # Handle scale parameter
+            if param_name == "scale":
+                continue  # Scale is not applied to coordinates
+
             parts = param_name.rsplit('_', 1)
             point_id = parts[0]
             coord = parts[1]
@@ -382,19 +385,20 @@ class LeastSquaresAdjustment:
 
     def _print_summary(self) -> None:
         """Prints adjustment summary."""
-        print(f"\n{'=' * 60}")
+        print(f"\n{'='*60}")
         print("ADJUSTMENT RESULTS")
-        print(f"{'=' * 60}")
+        print(f"{'='*60}")
         print(f"Converged: {self.result.converged}")
         print(f"Iterations: {self.result.iterations}")
         print(f"Redundancy: {self.result.redundancy}")
-        print(f"σ₀ (a posteriori): {self.result.sigma_0:.4f}")
+        print(f"σ₀ (a posteriori): {self.result.sigma_0:.6f}")
         print(f"vPv: {self.result.vPv:.6f}")
         print(f"\nGlobal Model Test (α={self.significance_level}):")
         print(f"  Test statistic: {self.result.test_statistic:.2f}")
-        print(f"  Critical region: [{self.result.test_critical_lower:.2f}, {self.result.test_critical_upper:.2f}]")
-        print(f"  Test passed: {self.result.test_passed}")
-        print(f"{'=' * 60}\n")
+        print(f"  Critical region: [{self.result.test_critical_lower:.2f}, "
+              f"{self.result.test_critical_upper:.2f}]")
+        print(f"  Test passed: {'✓' if self.result.test_passed else '✗'}")
+        print(f"{'='*60}\n")
 
 
 def run_apriori_analysis(network: Network) -> AdjustmentResult:
@@ -403,14 +407,6 @@ def run_apriori_analysis(network: Network) -> AdjustmentResult:
 
     Computes the cofactor matrix Qxx based on the network geometry
     and the stochastic model, without iterative adjustment.
-
-    This is useful for network design and planning.
-
-    Args:
-        network: The geodetic network
-
-    Returns:
-        AdjustmentResult with Qxx matrix (but no adjusted coordinates)
     """
     result = AdjustmentResult()
 
