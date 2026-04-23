@@ -1,11 +1,12 @@
 """
 Main application window for OpenAdjust.
 
-MVP Features:
-- Tab-based interface (Points, Observations, Results)
+Features:
+- Tab-based interface (Points, Observations, Results, Network Plot)
 - Editable tables for data entry
-- Adjustment button
-- Results display
+- Adjustment calculation
+- Network visualization with error ellipses
+- Interactive glossary with tooltips
 """
 
 import sys
@@ -15,14 +16,38 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QPushButton,
     QLabel, QStatusBar, QMenuBar, QMenu, QMessageBox,
     QHeaderView, QCheckBox, QComboBox, QDoubleSpinBox,
-    QGroupBox, QTextEdit, QSplitter, QToolBar
+    QGroupBox, QTextEdit, QSplitter, QToolBar, QToolTip
 )
-from PyQt6.QtCore import Qt, QLocale
-from PyQt6.QtGui import QAction, QIcon, QFont
+from PyQt6.QtCore import Qt, QLocale, QUrl
+from PyQt6.QtGui import QAction, QIcon, QFont, QDesktopServices
+
+import numpy as np
 
 from openadjust.core.network import Network
 from openadjust.core.point import Point
 from openadjust.core.adjustment import LeastSquaresAdjustment, run_apriori_analysis
+from openadjust.gui.widgets.network_plot import NetworkPlotWidget
+from openadjust.gui.dialogs.glossary_dialog import GlossaryDialog
+from openadjust.edu.glossary import get_tooltip, GLOSSARY
+
+
+class ClickableLabel(QLabel):
+    """Label that opens glossary on click."""
+
+    def __init__(self, text: str, term_id: str, parent=None):
+        super().__init__(text, parent)
+        self.term_id = term_id
+        # Entfernt: cursor: pointer (nicht in Qt CSS unterstützt)
+        self.setStyleSheet("color: #4a86e8; text-decoration: underline;")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)  # Das setzt den Cursor korrekt
+
+        tooltip = get_tooltip(term_id)
+        if tooltip:
+            self.setToolTip(f"{tooltip}\n\nKlicken für Details...")
+
+    def mousePressEvent(self, event):
+        dialog = GlossaryDialog(self.window(), self.term_id)
+        dialog.exec()
 
 
 class PointsTab(QWidget):
@@ -35,6 +60,13 @@ class PointsTab(QWidget):
     def setup_ui(self):
         layout = QVBoxLayout(self)
 
+        # Info label with tooltip
+        info_layout = QHBoxLayout()
+        info_layout.addWidget(QLabel("Punkte mit Koordinaten eingeben."))
+        info_layout.addWidget(ClickableLabel("Was sind Festpunkte?", "fehlerellipse"))
+        info_layout.addStretch()
+        layout.addLayout(info_layout)
+
         # Table for points
         self.table = QTableWidget()
         self.table.setColumnCount(7)
@@ -42,7 +74,6 @@ class PointsTab(QWidget):
             "ID", "X [m]", "Y [m]", "Z [m]", "Fix X", "Fix Y", "Fix Z"
         ])
 
-        # Column widths
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         for i in range(1, 4):
@@ -73,24 +104,19 @@ class PointsTab(QWidget):
     def add_point(self, point_id: str = "", x: float = 0.0, y: float = 0.0,
                   z: float = 0.0, fix_x: bool = False, fix_y: bool = False,
                   fix_z: bool = False):
-        """Adds a new row to the points table."""
         row = self.table.rowCount()
         self.table.insertRow(row)
 
-        # Generate default ID if not provided
         if not point_id:
             point_id = f"P{row + 1}"
 
-        # ID
         self.table.setItem(row, 0, QTableWidgetItem(point_id))
 
-        # Coordinates
         for col, val in enumerate([x, y, z], start=1):
             item = QTableWidgetItem(f"{val:.4f}")
             item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, col, item)
 
-        # Checkboxes for fixed coordinates
         for col, checked in enumerate([fix_x, fix_y, fix_z], start=4):
             checkbox_widget = QWidget()
             checkbox_layout = QHBoxLayout(checkbox_widget)
@@ -102,16 +128,13 @@ class PointsTab(QWidget):
             self.table.setCellWidget(row, col, checkbox_widget)
 
     def remove_selected(self):
-        """Removes selected rows."""
         rows = set(item.row() for item in self.table.selectedItems())
         for row in sorted(rows, reverse=True):
             self.table.removeRow(row)
 
     def load_example(self):
-        """Loads a simple example network."""
         self.table.setRowCount(0)
 
-        # Simple triangle example
         example_points = [
             ("P1", 1000.0, 1000.0, 100.0, True, True, True),
             ("P2", 1100.0, 1000.0, 100.0, True, True, True),
@@ -123,7 +146,6 @@ class PointsTab(QWidget):
             self.add_point(pid, x, y, z, fx, fy, fz)
 
     def get_points(self) -> list[Point]:
-        """Returns all points from the table."""
         points = []
         for row in range(self.table.rowCount()):
             try:
@@ -146,7 +168,6 @@ class PointsTab(QWidget):
         return points
 
     def get_point_count(self) -> int:
-        """Returns the number of points."""
         return self.table.rowCount()
 
 
@@ -160,7 +181,13 @@ class ObservationsTab(QWidget):
     def setup_ui(self):
         layout = QVBoxLayout(self)
 
-        # Table for observations
+        # Info with glossary links
+        info_layout = QHBoxLayout()
+        info_layout.addWidget(QLabel("Beobachtungen eingeben."))
+        info_layout.addWidget(ClickableLabel("Was ist die Gewichtsmatrix?", "gewichtsmatrix"))
+        info_layout.addStretch()
+        layout.addLayout(info_layout)
+
         self.table = QTableWidget()
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels([
@@ -172,7 +199,6 @@ class ObservationsTab(QWidget):
 
         layout.addWidget(self.table)
 
-        # Buttons
         button_layout = QHBoxLayout()
 
         self.btn_add = QPushButton("+ Beobachtung hinzufügen")
@@ -193,27 +219,22 @@ class ObservationsTab(QWidget):
     def add_observation(self, obs_id: str = "", obs_type: str = "Strecke",
                         station: str = "", target: str = "",
                         value: float = 0.0, std_dev: float = 0.002):
-        """Adds a new observation row."""
         row = self.table.rowCount()
         self.table.insertRow(row)
 
         if not obs_id:
             obs_id = f"B{row + 1}"
 
-        # ID
         self.table.setItem(row, 0, QTableWidgetItem(obs_id))
 
-        # Type dropdown
         type_combo = QComboBox()
         type_combo.addItems(["Strecke", "Richtung", "Zenitwinkel", "Höhenunterschied"])
         type_combo.setCurrentText(obs_type)
         self.table.setCellWidget(row, 1, type_combo)
 
-        # Station and Target
         self.table.setItem(row, 2, QTableWidgetItem(station))
         self.table.setItem(row, 3, QTableWidgetItem(target))
 
-        # Value and StdDev
         value_item = QTableWidgetItem(f"{value:.4f}")
         value_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.table.setItem(row, 4, value_item)
@@ -223,18 +244,12 @@ class ObservationsTab(QWidget):
         self.table.setItem(row, 5, std_item)
 
     def remove_selected(self):
-        """Removes selected rows."""
         rows = set(item.row() for item in self.table.selectedItems())
         for row in sorted(rows, reverse=True):
             self.table.removeRow(row)
 
     def load_example(self):
-        """Loads example observations for the tower survey."""
         self.table.setRowCount(0)
-
-        # Example: Tower survey from 3 stations
-        # True coordinates: P4 at (1050, 1028.868, 125)
-        import numpy as np
 
         stations = [
             ("P1", 1000.0, 1000.0, 100.0),
@@ -247,33 +262,24 @@ class ObservationsTab(QWidget):
         for sta_name, sx, sy, sz in stations:
             tx, ty, tz = target[1], target[2], target[3]
 
-            # Calculate true distance
             dx, dy, dz = tx - sx, ty - sy, tz - sz
             dist = np.sqrt(dx**2 + dy**2 + dz**2)
 
-            # Calculate true zenith angle
             s_horiz = np.sqrt(dx**2 + dy**2)
             zenith = np.arctan2(s_horiz, dz)
             zenith_gon = zenith * 200.0 / np.pi
 
-            # Add distance observation
             self.add_observation(f"D{obs_id}", "Strecke", sta_name, "P4", dist, 0.002)
             obs_id += 1
 
-            # Add zenith observation
             self.add_observation(f"Z{obs_id}", "Zenitwinkel", sta_name, "P4", zenith_gon, 0.02)
             obs_id += 1
 
     def get_observations(self, network: Network) -> bool:
-        """
-        Adds all observations from the table to the network.
-        Returns True if successful, False otherwise.
-        """
         from openadjust.models.distance import DistanceObservation
         from openadjust.models.zenith import ZenithObservation
         from openadjust.models.direction import DirectionObservation
         from openadjust.models.levelling import LevellingObservation
-        import numpy as np
 
         for row in range(self.table.rowCount()):
             try:
@@ -290,7 +296,6 @@ class ObservationsTab(QWidget):
                         value=value, std_dev=std_dev
                     )
                 elif obs_type == "Zenitwinkel":
-                    # Convert from gon to radians
                     value_rad = value * np.pi / 200.0
                     std_rad = std_dev * np.pi / 200.0
                     obs = ZenithObservation(
@@ -298,7 +303,6 @@ class ObservationsTab(QWidget):
                         value=value_rad, std_dev=std_rad
                     )
                 elif obs_type == "Richtung":
-                    # Convert from gon to radians
                     value_rad = value * np.pi / 200.0
                     std_rad = std_dev * np.pi / 200.0
                     obs = DirectionObservation(
@@ -311,7 +315,6 @@ class ObservationsTab(QWidget):
                         value=value, std_dev=std_dev
                     )
                 else:
-                    print(f"Unknown observation type: {obs_type}")
                     continue
 
                 network.add_observation(obs)
@@ -323,12 +326,11 @@ class ObservationsTab(QWidget):
         return True
 
     def get_observation_count(self) -> int:
-        """Returns the number of observations."""
         return self.table.rowCount()
 
 
 class ResultsTab(QWidget):
-    """Tab for displaying adjustment results."""
+    """Tab for displaying adjustment results with clickable explanations."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -337,9 +339,19 @@ class ResultsTab(QWidget):
     def setup_ui(self):
         layout = QVBoxLayout(self)
 
-        # Statistics group
+        # Statistics group with clickable terms
         stats_group = QGroupBox("Statistik")
         stats_layout = QVBoxLayout(stats_group)
+
+        # Clickable labels for terms
+        terms_layout = QHBoxLayout()
+        terms_layout.addWidget(ClickableLabel("σ₀ (Sigma Null)", "sigma_0"))
+        terms_layout.addWidget(QLabel("|"))
+        terms_layout.addWidget(ClickableLabel("Globaler Modelltest", "globaltest"))
+        terms_layout.addWidget(QLabel("|"))
+        terms_layout.addWidget(ClickableLabel("Redundanz", "redundanz"))
+        terms_layout.addStretch()
+        stats_layout.addLayout(terms_layout)
 
         self.stats_text = QTextEdit()
         self.stats_text.setReadOnly(True)
@@ -352,6 +364,13 @@ class ResultsTab(QWidget):
         # Adjusted coordinates group
         coords_group = QGroupBox("Ausgeglichene Koordinaten")
         coords_layout = QVBoxLayout(coords_group)
+
+        coords_info = QHBoxLayout()
+        coords_info.addWidget(ClickableLabel("Was ist die Kofaktormatrix?", "qxx_matrix"))
+        coords_info.addWidget(QLabel("|"))
+        coords_info.addWidget(ClickableLabel("Helmert-Punktlagefehler", "helmert_fehler"))
+        coords_info.addStretch()
+        coords_layout.addLayout(coords_info)
 
         self.coords_table = QTableWidget()
         self.coords_table.setColumnCount(7)
@@ -369,6 +388,13 @@ class ResultsTab(QWidget):
         residuals_group = QGroupBox("Verbesserungen")
         residuals_layout = QVBoxLayout(residuals_group)
 
+        residuals_info = QHBoxLayout()
+        residuals_info.addWidget(ClickableLabel("Was sind Verbesserungen?", "verbesserung"))
+        residuals_info.addWidget(QLabel("|"))
+        residuals_info.addWidget(ClickableLabel("Ausreißertest", "ausreissertest"))
+        residuals_info.addStretch()
+        residuals_layout.addLayout(residuals_info)
+
         self.residuals_table = QTableWidget()
         self.residuals_table.setColumnCount(5)
         self.residuals_table.setHorizontalHeaderLabels([
@@ -382,8 +408,6 @@ class ResultsTab(QWidget):
         layout.addWidget(residuals_group)
 
     def display_results(self, result, network: Network):
-        """Displays the adjustment results."""
-        # Statistics
         stats = f"""Ausgleichung {'konvergiert' if result.converged else 'NICHT konvergiert'}
 Iterationen: {result.iterations}
 Redundanz: {result.redundancy}
@@ -397,7 +421,6 @@ Globaler Modelltest (α=0.05):
 """
         self.stats_text.setText(stats)
 
-        # Adjusted coordinates
         self.coords_table.setRowCount(0)
         for point_id, (x, y, z) in result.adjusted_coords.items():
             row = self.coords_table.rowCount()
@@ -408,7 +431,6 @@ Globaler Modelltest (α=0.05):
             self.coords_table.setItem(row, 2, QTableWidgetItem(f"{y:.4f}"))
             self.coords_table.setItem(row, 3, QTableWidgetItem(f"{z:.4f}"))
 
-            # Standard deviations
             stds = result.get_point_std(point_id)
             if stds:
                 sx, sy, sz = stds
@@ -420,7 +442,6 @@ Globaler Modelltest (α=0.05):
                 self.coords_table.setItem(row, 5, QTableWidgetItem("—"))
                 self.coords_table.setItem(row, 6, QTableWidgetItem("—"))
 
-        # Residuals
         self.residuals_table.setRowCount(0)
         if result.residuals is not None:
             observations = network.get_enabled_observations()
@@ -433,7 +454,6 @@ Globaler Modelltest (α=0.05):
                 self.residuals_table.setItem(row, 2, QTableWidgetItem(f"{obs.station}→{obs.target}"))
 
                 v = result.residuals[i]
-                # Display in appropriate units
                 if obs.get_observation_type() in ["direction", "zenith"]:
                     v_display = f"{v * 200/3.14159:.4f} gon"
                 else:
@@ -441,10 +461,15 @@ Globaler Modelltest (α=0.05):
 
                 self.residuals_table.setItem(row, 3, QTableWidgetItem(v_display))
 
-                # Normalized residual
                 w = result.get_normalized_residual(i)
                 if w is not None:
-                    self.residuals_table.setItem(row, 4, QTableWidgetItem(f"{w:.2f}"))
+                    item = QTableWidgetItem(f"{w:.2f}")
+                    # Highlight potential outliers
+                    if abs(w) > 3:
+                        item.setBackground(Qt.GlobalColor.red)
+                    elif abs(w) > 2:
+                        item.setBackground(Qt.GlobalColor.yellow)
+                    self.residuals_table.setItem(row, 4, item)
                 else:
                     self.residuals_table.setItem(row, 4, QTableWidgetItem("—"))
 
@@ -455,16 +480,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OpenAdjust v0.1.0")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(1100, 800)
 
         self.network = None
+        self.result = None
 
         self.setup_ui()
         self.setup_menu()
         self.setup_statusbar()
 
     def setup_ui(self):
-        """Sets up the main UI components."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
@@ -476,23 +501,27 @@ class MainWindow(QMainWindow):
         self.points_tab = PointsTab()
         self.observations_tab = ObservationsTab()
         self.results_tab = ResultsTab()
+        self.plot_tab = NetworkPlotWidget()
 
         self.tabs.addTab(self.points_tab, "Punkte")
         self.tabs.addTab(self.observations_tab, "Beobachtungen")
         self.tabs.addTab(self.results_tab, "Ergebnisse")
+        self.tabs.addTab(self.plot_tab, "Netzplot")
 
         layout.addWidget(self.tabs)
 
-        # Adjustment button
+        # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
         self.btn_apriori = QPushButton("A-priori Analyse")
+        self.btn_apriori.setToolTip("Berechnet Genauigkeiten ohne Messwerte (nur Netzgeometrie)")
         self.btn_apriori.clicked.connect(self.run_apriori)
         button_layout.addWidget(self.btn_apriori)
 
         self.btn_adjust = QPushButton("Ausgleichung durchführen")
         self.btn_adjust.setStyleSheet("font-weight: bold; padding: 10px 20px;")
+        self.btn_adjust.setToolTip("Führt die vermittelnde Ausgleichung durch")
         self.btn_adjust.clicked.connect(self.run_adjustment)
         button_layout.addWidget(self.btn_adjust)
 
@@ -500,7 +529,6 @@ class MainWindow(QMainWindow):
         layout.addLayout(button_layout)
 
     def setup_menu(self):
-        """Sets up the menu bar."""
         menubar = self.menuBar()
 
         # File menu
@@ -521,37 +549,40 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("&Hilfe")
 
+        glossary_action = QAction("&Glossar", self)
+        glossary_action.setShortcut("F1")
+        glossary_action.triggered.connect(self.show_glossary)
+        help_menu.addAction(glossary_action)
+
+        help_menu.addSeparator()
+
         about_action = QAction("&Über OpenAdjust", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
 
     def setup_statusbar(self):
-        """Sets up the status bar."""
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
         self.update_statusbar()
 
     def update_statusbar(self):
-        """Updates the status bar with current counts."""
         n_points = self.points_tab.get_point_count()
         n_obs = self.observations_tab.get_observation_count()
         self.statusbar.showMessage(f"Punkte: {n_points} | Beobachtungen: {n_obs}")
 
     def new_project(self):
-        """Creates a new empty project."""
         self.points_tab.table.setRowCount(0)
         self.observations_tab.table.setRowCount(0)
         self.results_tab.stats_text.clear()
         self.results_tab.coords_table.setRowCount(0)
         self.results_tab.residuals_table.setRowCount(0)
         self.network = None
+        self.result = None
         self.update_statusbar()
 
     def build_network(self) -> Optional[Network]:
-        """Builds a Network object from the GUI data."""
         network = Network(name="GUI Network")
 
-        # Add points
         points = self.points_tab.get_points()
         if not points:
             QMessageBox.warning(self, "Fehler", "Keine Punkte definiert!")
@@ -564,7 +595,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Fehler", f"Punkt-Fehler: {e}")
                 return None
 
-        # Add observations
         if not self.observations_tab.get_observations(network):
             QMessageBox.warning(self, "Fehler", "Fehler beim Lesen der Beobachtungen!")
             return None
@@ -576,26 +606,27 @@ class MainWindow(QMainWindow):
         return network
 
     def run_apriori(self):
-        """Runs a-priori analysis."""
         network = self.build_network()
         if not network:
             return
 
         try:
             result = run_apriori_analysis(network)
+            self.network = network
+            self.result = result
+
             self.results_tab.display_results(result, network)
-            self.tabs.setCurrentIndex(2)  # Switch to results tab
+            self.plot_tab.set_data(network, result)
+
+            self.tabs.setCurrentIndex(2)
             self.statusbar.showMessage("A-priori Analyse abgeschlossen")
         except Exception as e:
             QMessageBox.critical(self, "Fehler", f"A-priori Analyse fehlgeschlagen:\n{e}")
 
     def run_adjustment(self):
-        """Runs the full adjustment."""
         network = self.build_network()
         if not network:
             return
-
-        self.network = network
 
         try:
             adj = LeastSquaresAdjustment(
@@ -606,8 +637,13 @@ class MainWindow(QMainWindow):
             )
             result = adj.run()
 
+            self.network = network
+            self.result = result
+
             self.results_tab.display_results(result, network)
-            self.tabs.setCurrentIndex(2)  # Switch to results tab
+            self.plot_tab.set_data(network, result)
+
+            self.tabs.setCurrentIndex(2)
 
             if result.converged:
                 self.statusbar.showMessage(
@@ -619,8 +655,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Fehler", f"Ausgleichung fehlgeschlagen:\n{e}")
 
+    def show_glossary(self):
+        dialog = GlossaryDialog(self)
+        dialog.exec()
+
     def show_about(self):
-        """Shows the about dialog."""
         QMessageBox.about(
             self,
             "Über OpenAdjust",
@@ -634,16 +673,19 @@ class MainWindow(QMainWindow):
                 <li>Horizontalrichtungen</li>
                 <li>Höhenunterschiede</li>
             </ul>
+            <p><b>Features:</b></p>
+            <ul>
+                <li>Netzplot mit Fehlerellipsen</li>
+                <li>Interaktives Glossar</li>
+                <li>Globaler Modelltest</li>
+            </ul>
             <p>Lizenz: GPL v3</p>
             """
         )
 
 
 def run_application() -> int:
-    """Starts the Qt application."""
     app = QApplication(sys.argv)
-
-    # Set application style
     app.setStyle("Fusion")
 
     window = MainWindow()
