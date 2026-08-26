@@ -6,11 +6,21 @@ const props = defineProps({
 })
 
 const OBS_TYPES = [
-  { value: 'distance',  label: 'Horizontalstrecke' },
+  { value: 'distance',  label: 'Horizontalstrecke (m)' },
   { value: 'direction', label: 'Horizontalrichtung (gon)' },
   { value: 'zenith',    label: 'Zenitwinkel (gon)' },
-  { value: 'levelling', label: 'Höhenunterschied' },
+  { value: 'levelling', label: 'Höhenunterschied (m)' },
 ]
+
+
+// Einheit je nach Beobachtungstyp (Winkel -> gon, sonst m)
+function unitFor(type) {
+  return (type === 'direction' || type === 'zenith') ? 'gon' : 'm'
+}
+// Schrittweite fürs Spinner-Feld (Winkel feiner als Strecken/Höhen)
+function stepFor(type) {
+  return (type === 'direction' || type === 'zenith') ? '0.0001' : '0.001'
+}
 
 function addObservation() {
   const firstId = props.points[0]?.id ?? ''
@@ -61,8 +71,14 @@ function removeObservation(index) {
               <option v-for="p in points" :key="p.id" :value="p.id">{{ p.id }}</option>
             </select>
           </td>
-          <td><input type="number" step="any" v-model.number="o.value" /></td>
-          <td><input type="number" step="any" v-model.number="o.std_dev" /></td>
+          <td>
+            <input type="number" :step="stepFor(o.type)" v-model.number="o.value" />
+            <span class="unit">{{ unitFor(o.type) }}</span>
+          </td>
+          <td>
+            <input type="number" :step="stepFor(o.type)" v-model.number="o.std_dev" />
+            <span class="unit">{{ unitFor(o.type) }}</span>
+          </td>
           <td><input type="checkbox" v-model="o.enabled" /></td>
           <td><button @click="removeObservation(i)" title="Löschen">✕</button></td>
         </tr>
@@ -75,6 +91,7 @@ function removeObservation(index) {
   </div>
 </template>
 
+
 <style scoped>
 table { border-collapse: collapse; margin: .5rem 0; }
 th, td { border: 1px solid #ccc; padding: .2rem .4rem; text-align: center; }
@@ -82,4 +99,5 @@ input[type="number"] { width: 6rem; }
 input.id { width: 4rem; }
 select { min-width: 6rem; }
 .hint { color: #b8860b; font-size: .85rem; }
+.unit { margin-left: .25rem; color: #666; font-size: .8rem; }
 </style>

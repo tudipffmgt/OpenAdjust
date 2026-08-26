@@ -4,20 +4,20 @@ import { computed } from 'vue'
 const props = defineProps({
   points: { type: Array, required: true },
   observations: { type: Array, default: () => [] },
-  result: { type: Object, default: null },   // Ausgleichungsergebnis (optional)
+  result: { type: Object, default: null },
+  ellipseScale: { type: Number, default: 2000 },
 })
 
 const SIZE = 600
 const PADDING = 55
 
-// Schnellzugriff: ID -> Punkt
 const pointsById = computed(() => {
   const map = {}
   for (const p of props.points) map[p.id] = p
   return map
 })
 
-// Bounding-Box: Näherungs- UND ausgeglichene Koordinaten einbeziehen
+// Bounding-Box: Näherungs- UND ausgeglichene Koordinaten
 const bounds = computed(() => {
   const xs = [], ys = []
   for (const p of props.points) { xs.push(p.x); ys.push(p.y) }
@@ -52,7 +52,6 @@ function toSvg(x, y) {
 const isFixed = (p) => p.fixed_x && p.fixed_y
 const hasResult = computed(() => !!props.result?.adjusted_coords)
 
-// Beste bekannte Position: ausgeglichen falls vorhanden, sonst Näherung
 function bestPos(id) {
   const adj = props.result?.adjusted_coords?.[id]
   if (adj) return toSvg(adj[0], adj[1])
@@ -60,7 +59,6 @@ function bestPos(id) {
   return p ? toSvg(p.x, p.y) : null
 }
 
-// Linien-Bauer (nimmt eine Positions-Funktion)
 function buildLines(posFn) {
   if (!bounds.value) return []
   const out = []
@@ -74,18 +72,15 @@ function buildLines(posFn) {
   return out
 }
 
-// Näherungslinien (immer; blass, sobald ein Ergebnis vorliegt)
 const approxLines = computed(() => buildLines(id => {
   const p = pointsById.value[id]
   return p ? toSvg(p.x, p.y) : null
 }))
 
-// Ausgeglichene Linien (nur nach Rechnung)
 const adjustedLines = computed(() =>
   hasResult.value ? buildLines(bestPos) : []
 )
 
-// Näherungspunkte (aus der Tabelle)
 const nodes = computed(() => {
   if (!bounds.value) return []
   return props.points.map(p => ({
@@ -93,12 +88,35 @@ const nodes = computed(() => {
   }))
 })
 
-// Ausgeglichene Punkte (mit Weltkoordinaten für Beschriftung)
 const adjustedNodes = computed(() => {
   if (!bounds.value || !props.result?.adjusted_coords) return []
   const out = []
   for (const [id, c] of Object.entries(props.result.adjusted_coords)) {
     out.push({ ...toSvg(c[0], c[1]), id, wx: c[0], wy: c[1] })
+  }
+  return out
+})
+
+// Fehlerellipsen aus den Halbachsen-Vektoren des Kerns
+const ellipses = computed(() => {
+  const src = props.result?.error_ellipses
+  if (!bounds.value || !src) return []
+  const out = []
+  for (const [id, e] of Object.entries(src)) {
+    const adj = props.result.adjusted_coords[id]
+    if (!adj) continue
+    const center = toSvg(adj[0], adj[1])
+    const k = props.ellipseScale
+
+    // Halbachsen-Endpunkte in Weltkoords -> überhöht -> in Pixel
+    const majEnd = toSvg(adj[0] + e.major_vec[0] * k, adj[1] + e.major_vec[1] * k)
+    const minEnd = toSvg(adj[0] + e.minor_vec[0] * k, adj[1] + e.minor_vec[1] * k)
+
+    const rMaj = Math.hypot(majEnd.x - center.x, majEnd.y - center.y)
+    const rMin = Math.hypot(minEnd.x - center.x, minEnd.y - center.y)
+    const angleDeg = Math.atan2(majEnd.y - center.y, majEnd.x - center.x) * 180 / Math.PI
+
+    out.push({ id, cx: center.x, cy: center.y, rx: rMaj, ry: rMin, angle: angleDeg })
   }
   return out
 })
@@ -108,7 +126,7 @@ const adjustedNodes = computed(() => {
   <div class="plot">
     <h3>Netzplan</h3>
     <svg :width="SIZE" :height="SIZE" class="netzplan">
-      <!-- Näherungslinien: kräftig ohne Ergebnis, blass mit Ergebnis -->
+      <!-- Näherungslinien -->
       <line
         v-for="l in approxLines" :key="'ap-' + l.id"
         :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
@@ -116,11 +134,20 @@ const adjustedNodes = computed(() => {
         :opacity="hasResult ? 0.25 : 1"
       />
 
-      <!-- Ausgeglichene Linien (nur nach Rechnung) -->
+      <!-- Ausgeglichene Linien -->
       <line
         v-for="l in adjustedLines" :key="'ad-' + l.id"
         :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
         stroke="#1d6fbf" stroke-width="1.8"
+      />
+
+      <!-- Fehlerellipsen -->
+      <ellipse
+        v-for="el in ellipses" :key="'el-' + el.id"
+        :cx="el.cx" :cy="el.cy" :rx="el.rx" :ry="el.ry"
+        :transform="`rotate(${el.angle} ${el.cx} ${el.cy})`"
+        fill="rgba(29,111,191,0.12)" stroke="#1d6fbf"
+        stroke-width="1.2" stroke-dasharray="4 2"
       />
 
       <!-- Näherungspunkte -->
@@ -135,12 +162,15 @@ const adjustedNodes = computed(() => {
           :cx="n.x" :cy="n.y" r="6"
           fill="none" stroke="#b02a37" stroke-width="1.5" stroke-dasharray="3 2"
         />
-        <text :x="n.x + 9" :y="n.y - 6" font-size="12" fill="#222"
+                <text :x="n.x + 9" :y="n.y - 6" font-size="12" fill="#222"
               class="label">{{ n.id }}</text>
-        <text :x="n.x + 9" :y="n.y + 8" font-size="9" fill="#888"
+        <!-- Näherungskoordinaten nur zeigen, solange KEIN Ergebnis da ist -->
+        <text v-if="!hasResult"
+              :x="n.x + 9" :y="n.y + 8" font-size="9" fill="#888"
               class="label">
           {{ pointsById[n.id].x.toFixed(1) }} / {{ pointsById[n.id].y.toFixed(1) }}
         </text>
+
       </g>
 
       <!-- Ausgeglichene Punkte + Beschriftung -->
@@ -152,7 +182,7 @@ const adjustedNodes = computed(() => {
         </text>
       </g>
 
-      <!-- Koordinatenkreuz unten links (N = Nord/X oben, O = Ost/Y rechts) -->
+      <!-- Koordinatenkreuz unten links -->
       <g class="axes" transform="translate(28, 575)">
         <line x1="0" y1="0" x2="0" y2="-28" stroke="#333" stroke-width="1.5"
               marker-end="url(#arrow)" />
@@ -173,7 +203,8 @@ const adjustedNodes = computed(() => {
     <p class="legend">
       <span class="fix">▲</span> Festpunkt &nbsp;
       <span class="new">◌</span> Neupunkt (Näherung) &nbsp;
-      <span class="adj">●</span> ausgeglichen
+      <span class="adj">●</span> ausgeglichen &nbsp;
+      <span class="ell">⬭</span> Fehlerellipse
     </p>
   </div>
 </template>
@@ -185,7 +216,7 @@ const adjustedNodes = computed(() => {
 .legend .fix { color: #157347; }
 .legend .new { color: #b02a37; }
 .legend .adj { color: #1d6fbf; }
-/* Text-Kontur, damit Labels über Linien lesbar bleiben */
+.legend .ell { color: #1d6fbf; }
 .label {
   paint-order: stroke;
   stroke: #fafafa;

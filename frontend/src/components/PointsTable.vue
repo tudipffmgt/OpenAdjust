@@ -19,18 +19,19 @@ function removePoint(index) {
   <div class="points-table">
     <h3>Punkte</h3>
     <table>
-      <thead>
+        <thead>
         <tr>
-          <th>ID</th><th>X</th><th>Y</th><th>Z</th>
+          <th>ID</th>
+          <th>X [m]</th><th>Y [m]</th><th>Z [m]</th>
           <th>Fix X</th><th>Fix Y</th><th>Fix Z</th><th></th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="(p, i) in points" :key="i">
           <td><input v-model="p.id" /></td>
-          <td><input type="number" step="any" v-model.number="p.x" /></td>
-          <td><input type="number" step="any" v-model.number="p.y" /></td>
-          <td><input type="number" step="any" v-model.number="p.z" /></td>
+          <td><input type="number" step="0.001" v-model.number="p.x" /></td>
+          <td><input type="number" step="0.001" v-model.number="p.y" /></td>
+          <td><input type="number" step="0.001" v-model.number="p.z" /></td>
           <td><input type="checkbox" v-model="p.fixed_x" /></td>
           <td><input type="checkbox" v-model="p.fixed_y" /></td>
           <td><input type="checkbox" v-model="p.fixed_z" /></td>

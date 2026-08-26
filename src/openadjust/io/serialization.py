@@ -127,6 +127,62 @@ def _arr(a: Optional[np.ndarray]):
     """numpy array -> nested list (JS-friendly), or None."""
     return None if a is None else np.asarray(a).tolist()
 
+def _compute_error_ellipses(result: 'AdjustmentResult') -> dict:
+    """Computes 2D error ellipse parameters per point from the 2x2 block of Qxx.
+
+    For each point with free x/y, the 2x2 cofactor submatrix is decomposed
+    (symmetric eigendecomposition). Semi-axes are scaled with sigma_0.
+
+    Returns: {point_id: {a, b, theta, major_vec, minor_vec}}
+      a, b       -- semi-major/minor axis [m] = sigma_0 * sqrt(eigenvalue)
+      theta      -- orientation of major axis [gon], from North(X) toward East(Y)
+      major_vec  -- [dNorth, dEast] major semi-axis vector [m] (for plotting)
+      minor_vec  -- [dNorth, dEast] minor semi-axis vector [m]
+    """
+    if result.Qxx is None or not result.param_index:
+        return {}
+
+    s0 = result.sigma_0
+    ellipses = {}
+
+    for pid in result.adjusted_coords:
+        kx, ky = f"{pid}_x", f"{pid}_y"
+        if kx not in result.param_index or ky not in result.param_index:
+            continue  # Festpunkt (x/y fix) -> keine Fehlerellipse
+
+        ix = result.param_index[kx]
+        iy = result.param_index[ky]
+
+        # 2x2-Kofaktor-Teilmatrix (Reihenfolge: x=Nord, y=Ost)
+        Q = np.array([
+            [result.Qxx[ix, ix], result.Qxx[ix, iy]],
+            [result.Qxx[iy, ix], result.Qxx[iy, iy]],
+        ])
+
+        # Symmetrische Eigenwertzerlegung -> aufsteigende Eigenwerte
+        eigvals, eigvecs = np.linalg.eigh(Q)
+        eigvals = np.clip(eigvals, 0.0, None)  # numerisches Rauschen abfangen
+
+        lam_major, lam_minor = eigvals[1], eigvals[0]
+        v_major = eigvecs[:, 1]   # (Nord, Ost)-Komponenten der großen Halbachse
+        v_minor = eigvecs[:, 0]
+
+        a = float(s0 * np.sqrt(lam_major))
+        b = float(s0 * np.sqrt(lam_minor))
+
+        # Orientierung: Winkel der großen Halbachse von Nord(X) Richtung Ost(Y)
+        theta_gon = float(np.arctan2(v_major[1], v_major[0]) * 200.0 / np.pi)
+
+        ellipses[pid] = {
+            "a": a,
+            "b": b,
+            "theta": theta_gon,
+            "major_vec": [a * float(v_major[0]), a * float(v_major[1])],
+            "minor_vec": [b * float(v_minor[0]), b * float(v_minor[1])],
+        }
+
+    return ellipses
+
 
 def result_to_dict(result: AdjustmentResult) -> dict:
     """Serializes an AdjustmentResult into a JSON-ready dict."""
@@ -139,6 +195,7 @@ def result_to_dict(result: AdjustmentResult) -> dict:
         "adjusted_coords": {
             pid: list(xyz) for pid, xyz in result.adjusted_coords.items()
         },
+        "error_ellipses": _compute_error_ellipses(result),
         "param_index": result.param_index,
         "residuals": _arr(result.residuals),
         "corrections": _arr(result.corrections),
