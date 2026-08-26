@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>OpenAdjust — Pyodide PoC</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 700px; margin: 3rem auto; }
+    #status { color: #666; }
+    pre { background: #f4f4f4; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+    .ok { color: #157347; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>OpenAdjust — Rechenkern im Browser</h1>
+  <p id="status">Lade Rechenkern (Pyodide + NumPy)…</p>
+  <div id="output"></div>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.28.0/full/pyodide.js"></script>
+  <script type="module">
+    const status = document.getElementById("status");
+    const output = document.getElementById("output");
+
+    async function main() {
+      // 1) Pyodide-Laufzeit laden
+      const pyodide = await loadPyodide();
+
+      // 2) NumPy + micropip bereitstellen
+      status.textContent = "Lade NumPy…";
+      await pyodide.loadPackage(["numpy", "scipy", "micropip"]);
+
+      // 3) Dein Paket als Wheel installieren  (Version 0.1.0!)
+      status.textContent = "Installiere openadjust…";
+      const micropip = pyodide.pyimport("micropip");
+      await micropip.install("./dist/openadjust-0.1.0-py3-none-any.whl", { keepGoing: true, deps: false });
+
+      // 4) Bootstrap laden und Ausgleichung rechnen
+      status.textContent = "Rechne Ausgleichung…";
+      const bootstrap = await (await fetch("./bootstrap.py")).text();
+      await pyodide.runPythonAsync(bootstrap);
+
+      const resultJson = await pyodide.runPythonAsync("run_simple_triangle()");
+      const result = JSON.parse(resultJson);
+
+      // 5) Ergebnis anzeigen
+      status.innerHTML = '<span class="ok">✓ Rechenkern läuft im Browser!</span>';
+      const N = result.adjusted_coords["N"];
+      output.innerHTML = `
+        <h3>Ergebnis „Einfaches Dreieck"</h3>
+        <p>Konvergiert: <b>${result.converged}</b> nach ${result.iterations} Iterationen</p>
+        <p>σ₀ (a posteriori): <b>${result.sigma_0.toExponential(3)}</b></p>
+        <p>Redundanz: <b>${result.redundancy}</b></p>
+        <p>Ausgeglichener Neupunkt N: <b>x=${N[0].toFixed(4)}, y=${N[1].toFixed(4)}</b></p>
+        <p>Globaler Modelltest bestanden: <b>${result.test.passed}</b></p>
+        <details><summary>Vollständiges Ergebnis-JSON</summary>
+        <pre>${JSON.stringify(result, null, 2)}</pre></details>`;
+    }
+
+    main().catch(err => {
+      status.innerHTML = '<span style="color:#b02a37">Fehler:</span> ' + err;
+      console.error(err);
+    });
+  </script>
+</body>
+</html>

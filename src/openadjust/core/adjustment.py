@@ -10,7 +10,6 @@ The solution minimizes v'Pv (weighted sum of squared residuals).
 from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
-from scipy import linalg
 
 from openadjust.core.network import Network
 from openadjust.core.point import Point

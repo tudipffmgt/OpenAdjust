@@ -22,6 +22,7 @@ from PyQt6.QtCore import Qt, QLocale, QUrl
 from PyQt6.QtGui import QAction, QIcon, QFont, QDesktopServices
 
 import numpy as np
+from PyQt6.QtWidgets import QFileDialog, QInputDialog
 
 from openadjust.core.network import Network
 from openadjust.core.point import Point
@@ -29,7 +30,12 @@ from openadjust.core.adjustment import LeastSquaresAdjustment, run_apriori_analy
 from openadjust.gui.widgets.network_plot import NetworkPlotWidget
 from openadjust.gui.dialogs.glossary_dialog import GlossaryDialog
 from openadjust.edu.glossary import get_tooltip, GLOSSARY
-
+from openadjust.io.project_file import save_project, load_project
+from openadjust.io.csv_handler import (
+    import_points_csv, import_observations_csv,
+    export_points_csv, export_observations_csv
+)
+from openadjust.examples import get_example_list, load_example
 
 class ClickableLabel(QLabel):
     """Label that opens glossary on click."""
@@ -484,6 +490,7 @@ class MainWindow(QMainWindow):
 
         self.network = None
         self.result = None
+        self.current_project_path = None
 
         self.setup_ui()
         self.setup_menu()
@@ -541,10 +548,60 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        open_action = QAction("Projekt &öffnen...", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.open_project)
+        file_menu.addAction(open_action)
+
+        save_action = QAction("Projekt &speichern", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self.save_project)
+        file_menu.addAction(save_action)
+
+        save_as_action = QAction("Projekt speichern &unter...", self)
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self.save_project_as)
+        file_menu.addAction(save_as_action)
+
+        file_menu.addSeparator()
+
+        # Import submenu
+        import_menu = file_menu.addMenu("&Importieren")
+
+        import_points_action = QAction("Punkte aus CSV...", self)
+        import_points_action.triggered.connect(self.import_points)
+        import_menu.addAction(import_points_action)
+
+        import_obs_action = QAction("Beobachtungen aus CSV...", self)
+        import_obs_action.triggered.connect(self.import_observations)
+        import_menu.addAction(import_obs_action)
+
+        # Export submenu
+        export_menu = file_menu.addMenu("&Exportieren")
+
+        export_points_action = QAction("Punkte als CSV...", self)
+        export_points_action.triggered.connect(self.export_points)
+        export_menu.addAction(export_points_action)
+
+        export_obs_action = QAction("Beobachtungen als CSV...", self)
+        export_obs_action.triggered.connect(self.export_observations)
+        export_menu.addAction(export_obs_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction("&Beenden", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        # Examples menu
+        examples_menu = menubar.addMenu("&Beispiele")
+
+        for example in get_example_list():
+            action = QAction(f"{example['name']} ({example['category']})", self)
+            action.setData(example['id'])
+            action.triggered.connect(self.load_example_from_menu)
+            examples_menu.addAction(action)
 
         # Help menu
         help_menu = menubar.addMenu("&Hilfe")
@@ -578,6 +635,249 @@ class MainWindow(QMainWindow):
         self.results_tab.residuals_table.setRowCount(0)
         self.network = None
         self.result = None
+        self.update_statusbar()
+
+    def open_project(self):
+        """Opens a project file."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Projekt öffnen", "",
+            "OpenAdjust Projekte (*.oadj);;Alle Dateien (*)"
+        )
+        if not filepath:
+            return
+
+        network = load_project(filepath)
+        if network is None:
+            QMessageBox.critical(self, "Fehler", "Projekt konnte nicht geladen werden!")
+            return
+
+        self.current_project_path = filepath
+        self._load_network_to_gui(network)
+        self.statusbar.showMessage(f"Projekt geladen: {filepath}")
+
+    def save_project(self):
+        """Saves the current project."""
+        if not hasattr(self, 'current_project_path') or not self.current_project_path:
+            self.save_project_as()
+            return
+
+        network = self.build_network()
+        if network:
+            if save_project(self.current_project_path, network):
+                self.statusbar.showMessage(f"Projekt gespeichert: {self.current_project_path}")
+            else:
+                QMessageBox.critical(self, "Fehler", "Projekt konnte nicht gespeichert werden!")
+
+    def save_project_as(self):
+        """Saves the project with a new filename."""
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Projekt speichern", "",
+            "OpenAdjust Projekte (*.oadj);;Alle Dateien (*)"
+        )
+        if not filepath:
+            return
+
+        if not filepath.endswith('.oadj'):
+            filepath += '.oadj'
+
+        network = self.build_network()
+        if network:
+            if save_project(filepath, network):
+                self.current_project_path = filepath
+                self.statusbar.showMessage(f"Projekt gespeichert: {filepath}")
+            else:
+                QMessageBox.critical(self, "Fehler", "Projekt konnte nicht gespeichert werden!")
+
+    def import_points(self):
+        """Imports points from CSV."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Punkte importieren", "",
+            "CSV Dateien (*.csv *.txt);;Alle Dateien (*)"
+        )
+        if not filepath:
+            return
+
+        # Create temporary network for import
+        temp_network = Network()
+        count, errors = import_points_csv(filepath, temp_network)
+
+        if errors:
+            error_msg = "\n".join(errors[:10])
+            if len(errors) > 10:
+                error_msg += f"\n... und {len(errors) - 10} weitere Fehler"
+            QMessageBox.warning(self, "Import-Warnungen", error_msg)
+
+        # Add points to GUI
+        for point in temp_network.points.values():
+            self.points_tab.add_point(
+                point.id, point.x, point.y, point.z,
+                point.fixed_x, point.fixed_y, point.fixed_z
+            )
+
+        self.update_statusbar()
+        self.statusbar.showMessage(f"{count} Punkte importiert")
+
+    def import_observations(self):
+        """Imports observations from CSV."""
+        # First build network with current points
+        network = Network()
+        for point in self.points_tab.get_points():
+            network.add_point(point)
+
+        if not network.points:
+            QMessageBox.warning(self, "Fehler", "Bitte zuerst Punkte eingeben oder importieren!")
+            return
+
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Beobachtungen importieren", "",
+            "CSV Dateien (*.csv *.txt);;Alle Dateien (*)"
+        )
+        if not filepath:
+            return
+
+        count, errors = import_observations_csv(filepath, network)
+
+        if errors:
+            error_msg = "\n".join(errors[:10])
+            if len(errors) > 10:
+                error_msg += f"\n... und {len(errors) - 10} weitere Fehler"
+            QMessageBox.warning(self, "Import-Warnungen", error_msg)
+
+        # Add observations to GUI
+        type_names = {
+            'distance': 'Strecke',
+            'direction': 'Richtung',
+            'zenith': 'Zenitwinkel',
+            'levelling': 'Höhenunterschied'
+        }
+
+        for obs in network.observations:
+            obs_type = type_names.get(obs.get_observation_type(), 'Strecke')
+            value = obs.value
+            std_dev = obs.std_dev
+
+            # Convert to display units
+            if obs.get_observation_type() in ['direction', 'zenith']:
+                value = value * 200.0 / np.pi
+                std_dev = std_dev * 200.0 / np.pi
+
+            self.observations_tab.add_observation(
+                obs.id, obs_type, obs.station, obs.target, value, std_dev
+            )
+
+        self.update_statusbar()
+        self.statusbar.showMessage(f"{count} Beobachtungen importiert")
+
+    def export_points(self):
+        """Exports points to CSV."""
+        network = self.build_network()
+        if not network or not network.points:
+            QMessageBox.warning(self, "Fehler", "Keine Punkte zum Exportieren!")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Punkte exportieren", "",
+            "CSV Dateien (*.csv);;Alle Dateien (*)"
+        )
+        if not filepath:
+            return
+
+        if export_points_csv(filepath, network):
+            self.statusbar.showMessage(f"Punkte exportiert: {filepath}")
+        else:
+            QMessageBox.critical(self, "Fehler", "Export fehlgeschlagen!")
+
+    def export_observations(self):
+        """Exports observations to CSV."""
+        network = self.build_network()
+        if not network or not network.observations:
+            QMessageBox.warning(self, "Fehler", "Keine Beobachtungen zum Exportieren!")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Beobachtungen exportieren", "",
+            "CSV Dateien (*.csv);;Alle Dateien (*)"
+        )
+        if not filepath:
+            return
+
+        if export_observations_csv(filepath, network):
+            self.statusbar.showMessage(f"Beobachtungen exportiert: {filepath}")
+        else:
+            QMessageBox.critical(self, "Fehler", "Export fehlgeschlagen!")
+
+    def load_example_from_menu(self):
+        """Loads an example from the menu."""
+        action = self.sender()
+        example_id = action.data()
+
+        result = load_example(example_id)
+        if result is None:
+            QMessageBox.warning(self, "Fehler", f"Beispiel '{example_id}' nicht gefunden!")
+            return
+
+        network, info = result
+
+        # Clear and load
+        self.new_project()
+        self._load_network_to_gui(network)
+
+        # Show info dialog
+        info_text = f"""<h2>{info.name}</h2>
+        <p><b>Kategorie:</b> {info.category}</p>
+        <p>{info.description.replace(chr(10), '<br>')}</p>
+
+        <h3>Lernziele</h3>
+        <ul>
+        {''.join(f'<li>{goal}</li>' for goal in info.learning_goals)}
+        </ul>
+
+        <h3>Übungen</h3>
+        <ol>
+        {''.join(f'<li>{ex}</li>' for ex in info.exercises)}
+        </ol>
+        """
+
+        if info.reference:
+            info_text += f"<p><b>Referenz:</b> {info.reference}</p>"
+
+        QMessageBox.information(self, f"Beispiel: {info.name}", info_text)
+
+        self.statusbar.showMessage(f"Beispiel geladen: {info.name}")
+
+    def _load_network_to_gui(self, network: Network):
+        """Loads a network into the GUI tables."""
+        self.points_tab.table.setRowCount(0)
+        self.observations_tab.table.setRowCount(0)
+
+        # Load points
+        for point in network.points.values():
+            self.points_tab.add_point(
+                point.id, point.x, point.y, point.z,
+                point.fixed_x, point.fixed_y, point.fixed_z
+            )
+
+        # Load observations
+        type_names = {
+            'distance': 'Strecke',
+            'direction': 'Richtung',
+            'zenith': 'Zenitwinkel',
+            'levelling': 'Höhenunterschied'
+        }
+
+        for obs in network.observations:
+            obs_type = type_names.get(obs.get_observation_type(), 'Strecke')
+            value = obs.value
+            std_dev = obs.std_dev
+
+            if obs.get_observation_type() in ['direction', 'zenith']:
+                value = value * 200.0 / np.pi
+                std_dev = std_dev * 200.0 / np.pi
+
+            self.observations_tab.add_observation(
+                obs.id, obs_type, obs.station, obs.target, value, std_dev
+            )
+
         self.update_statusbar()
 
     def build_network(self) -> Optional[Network]:

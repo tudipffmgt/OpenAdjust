@@ -20,10 +20,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=1.26.0",
-    "scipy>=1.11.0",
-    "pyqt6>=6.6.0",
-    "matplotlib>=3.8.0",
+    "numpy",
+    "scipy"
 ]
 
 [project.optional-dependencies]
