@@ -29,6 +29,7 @@ class Network:
     points: dict[str, Point] = field(default_factory=dict)
     observations: list[Observation] = field(default_factory=list)
     include_scale: bool = False  # NEW: Scale parameter for distance networks
+    orientations: dict[str, float] = field(default_factory=dict)
 
     def add_point(self, point: Point) -> None:
         """Adds a point to the network."""
@@ -56,33 +57,32 @@ class Network:
         return [obs for obs in self.observations if obs.enabled]
 
     def get_unknown_parameters(self) -> dict[str, int]:
-        """
-        Builds a dictionary mapping parameter names to indices.
-
-        Only includes unfixed coordinates. This defines the columns of the design matrix.
-        If include_scale is True, adds a scale parameter at the end.
-
-        Returns:
-            Dictionary like {'P1_x': 0, 'P1_y': 1, 'P2_x': 2, ..., 'scale': n}
-        """
         param_index = {}
         idx = 0
-
         for point_id, point in self.points.items():
             if not point.fixed_x:
-                param_index[f"{point_id}_x"] = idx
+                param_index[f"{point_id}_x"] = idx;
                 idx += 1
             if not point.fixed_y:
-                param_index[f"{point_id}_y"] = idx
+                param_index[f"{point_id}_y"] = idx;
                 idx += 1
             if not point.fixed_z:
-                param_index[f"{point_id}_z"] = idx
+                param_index[f"{point_id}_z"] = idx;
                 idx += 1
 
-        # Add scale parameter if requested
-        if self.include_scale:
-            param_index["scale"] = idx
+        # Orientierungsunbekannte: eine je Gruppe mit Richtungsbeobachtungen
+        seen = []
+        for obs in self.get_enabled_observations():
+            if obs.get_observation_type() == "direction":
+                g = getattr(obs, "orientation_group", obs.station) or obs.station
+                if g not in seen:
+                    seen.append(g)
+                    param_index[f"orientation_{g}"] = idx;
+                    idx += 1
 
+        if self.include_scale:
+            param_index["scale"] = idx;
+            idx += 1
         return param_index
 
     def get_num_observations(self) -> int:
@@ -101,9 +101,27 @@ class Network:
         """Returns True if network includes a scale parameter."""
         return self.include_scale
 
+    def initialize_orientations(self) -> None:
+        groups: dict[str, list] = {}
+        for obs in self.get_enabled_observations():
+            if obs.get_observation_type() == "direction":
+                g = getattr(obs, "orientation_group", obs.station) or obs.station
+                groups.setdefault(g, []).append(obs)
+        for g, obs_list in groups.items():
+            s = c = 0.0
+            for obs in obs_list:
+                sta = self.get_point(obs.station); tgt = self.get_point(obs.target)
+                bearing = np.arctan2(tgt.y - sta.y, tgt.x - sta.x)
+                o = bearing - obs.value          # r = bearing - o
+                s += np.sin(o); c += np.cos(o)
+            self.orientations[g] = float(np.arctan2(s, c))
+
+
     def __repr__(self) -> str:
         scale_str = ", scale=True" if self.include_scale else ""
         return (f"Network(name='{self.name}', "
                 f"points={len(self.points)}, "
                 f"observations={len(self.observations)}, "
                 f"redundancy={self.get_redundancy()}{scale_str})")
+
+

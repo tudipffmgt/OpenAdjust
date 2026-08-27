@@ -25,6 +25,7 @@ VERSION = "0.2.0"  # browser-first schema
 
 # Umrechnungsfaktoren (GUI arbeitet in gon, Kern in Radiant)
 GON_TO_RAD = math.pi / 200.0
+RAD_TO_GON = 200.0 / math.pi
 
 # Beobachtungstypen, deren value/std_dev ein Winkel in gon sind (aus der GUI)
 _ANGLE_TYPES = {"direction", "zenith"}
@@ -36,7 +37,13 @@ _OBS_CLASSES = {
     "levelling": LevellingObservation,
 }
 
-
+def _orientations_to_gon(result: 'AdjustmentResult') -> dict:
+    """Ausgeglichene Orientierungen je Standpunkt, rad -> gon, normiert [0, 400)."""
+    out = {}
+    for group, o_rad in getattr(result, "orientations", {}).items():
+        gon = (o_rad * RAD_TO_GON) % 400.0
+        out[group] = float(gon)
+    return out
 # --- Network -> dict -----------------------------------------------------
 
 def network_to_dict(network: Network, description: str = "") -> dict:
@@ -226,6 +233,7 @@ def result_to_dict(result: AdjustmentResult) -> dict:
         "adjusted_coords": {
             pid: list(xyz) for pid, xyz in result.adjusted_coords.items()
         },
+        "orientations": _orientations_to_gon(result),
         "error_ellipses": _compute_error_ellipses(result),
         "point_std": _compute_point_stds(result),
         "normalized_residuals": _compute_normalized_residuals(result),

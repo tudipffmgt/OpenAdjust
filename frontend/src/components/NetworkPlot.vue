@@ -59,27 +59,48 @@ function bestPos(id) {
   return p ? toSvg(p.x, p.y) : null
 }
 
-function buildLines(posFn) {
+function buildConnections(posFn) {
   if (!bounds.value) return []
-  const out = []
+  const map = new Map()
   for (const o of props.observations) {
     if (o.enabled === false) continue
-    const a = posFn(o.station)
-    const b = posFn(o.target)
+    const [p, q] = [o.station, o.target].slice().sort()
+    const key = p + '|' + q
+    let c = map.get(key)
+    if (!c) { c = { key, p, q, hasDist: false, dirPQ: false, dirQP: false }; map.set(key, c) }
+    if (o.type === 'distance') c.hasDist = true
+    if (o.type === 'direction') {
+      if (o.station === p) c.dirPQ = true
+      else c.dirQP = true
+    }
+  }
+  const out = []
+  for (const c of map.values()) {
+    const a = posFn(c.p), b = posFn(c.q)
     if (!a || !b) continue
-    out.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, id: o.id })
+    out.push({
+      ...c,
+      hasDir: c.dirPQ || c.dirQP,
+      reciprocalDir: c.dirPQ && c.dirQP,
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,               // Mitte (einseitig)
+      t1x: a.x + (b.x - a.x) / 3,     t1y: a.y + (b.y - a.y) / 3,      // 1/3
+      t2x: a.x + (b.x - a.x) * 2 / 3, t2y: a.y + (b.y - a.y) * 2 / 3,  // 2/3
+    })
   }
   return out
 }
 
-const approxLines = computed(() => buildLines(id => {
+
+const approxConns = computed(() => buildConnections(id => {
   const p = pointsById.value[id]
   return p ? toSvg(p.x, p.y) : null
 }))
 
-const adjustedLines = computed(() =>
-  hasResult.value ? buildLines(bestPos) : []
+const adjustedConns = computed(() =>
+  hasResult.value ? buildConnections(bestPos) : []
 )
+
 
 const nodes = computed(() => {
   if (!bounds.value) return []
@@ -126,20 +147,52 @@ const ellipses = computed(() => {
   <div class="plot">
     <h3>Netzplan</h3>
     <svg :width="SIZE" :height="SIZE" class="netzplan">
-      <!-- Näherungslinien -->
-      <line
-        v-for="l in approxLines" :key="'ap-' + l.id"
-        :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
-        stroke="#888" stroke-width="1.5"
-        :opacity="hasResult ? 0.25 : 1"
-      />
+       <!-- Näherungslinien: Pelzer-Signaturen -->
+      <template v-for="l in approxConns" :key="'ap-' + l.key">
+        <line v-if="l.hasDist && !l.hasDir"
+          :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
+          stroke="#888" stroke-width="1.5" :opacity="hasResult ? 0.25 : 1" />
+        <line v-else-if="l.hasDir && !l.hasDist"
+          :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
+          stroke="#888" stroke-width="1.5" stroke-dasharray="8 5" :opacity="hasResult ? 0.25 : 1" />
+        <template v-else-if="l.reciprocalDir">
+          <line :x1="l.x1" :y1="l.y1" :x2="l.t1x" :y2="l.t1y"
+            stroke="#888" stroke-width="1.5" :opacity="hasResult ? 0.25 : 1" />
+          <line :x1="l.t1x" :y1="l.t1y" :x2="l.t2x" :y2="l.t2y"
+            stroke="#888" stroke-width="1.5" stroke-dasharray="8 5" :opacity="hasResult ? 0.25 : 1" />
+          <line :x1="l.t2x" :y1="l.t2y" :x2="l.x2" :y2="l.y2"
+            stroke="#888" stroke-width="1.5" :opacity="hasResult ? 0.25 : 1" />
+        </template>
+        <template v-else>
+          <line :x1="l.x1" :y1="l.y1" :x2="l.mx" :y2="l.my"
+            stroke="#888" stroke-width="1.5" :opacity="hasResult ? 0.25 : 1" />
+          <line :x1="l.mx" :y1="l.my" :x2="l.x2" :y2="l.y2"
+            stroke="#888" stroke-width="1.5" stroke-dasharray="8 5" :opacity="hasResult ? 0.25 : 1" />
+        </template>
+      </template>
 
-      <!-- Ausgeglichene Linien -->
-      <line
-        v-for="l in adjustedLines" :key="'ad-' + l.id"
-        :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
-        stroke="#1d6fbf" stroke-width="1.8"
-      />
+
+      <!-- Ausgeglichene Linien: Pelzer-Signaturen -->
+      <template v-for="l in adjustedConns" :key="'ad-' + l.key">
+        <line v-if="l.hasDist && !l.hasDir"
+          :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
+          stroke="#1d6fbf" stroke-width="1.8" />
+        <line v-else-if="l.hasDir && !l.hasDist"
+          :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"
+          stroke="#1d6fbf" stroke-width="1.6" stroke-dasharray="8 5" />
+        <template v-else-if="l.reciprocalDir">
+          <line :x1="l.x1" :y1="l.y1" :x2="l.t1x" :y2="l.t1y" stroke="#1d6fbf" stroke-width="1.8" />
+          <line :x1="l.t1x" :y1="l.t1y" :x2="l.t2x" :y2="l.t2y" stroke="#1d6fbf" stroke-width="1.6" stroke-dasharray="8 5" />
+          <line :x1="l.t2x" :y1="l.t2y" :x2="l.x2" :y2="l.y2" stroke="#1d6fbf" stroke-width="1.8" />
+        </template>
+        <template v-else>
+          <line :x1="l.x1" :y1="l.y1" :x2="l.mx" :y2="l.my" stroke="#1d6fbf" stroke-width="1.8" />
+          <line :x1="l.mx" :y1="l.my" :x2="l.x2" :y2="l.y2" stroke="#1d6fbf" stroke-width="1.6" stroke-dasharray="8 5" />
+        </template>
+      </template>
+
+
+
 
       <!-- Fehlerellipsen -->
       <ellipse
@@ -204,8 +257,13 @@ const ellipses = computed(() => {
       <span class="fix">▲</span> Festpunkt &nbsp;
       <span class="new">◌</span> Neupunkt (Näherung) &nbsp;
       <span class="adj">●</span> ausgeglichen &nbsp;
-      <span class="ell">⬭</span> Fehlerellipse
+      <span class="ell">⬭</span> Fehlerellipse &nbsp;
+      <span class="line-solid">──</span> Strecke &nbsp;
+      <span class="line-dash">‑ ‑</span> Richtung &nbsp;
+      <span class="line-both">─‑</span> Strecke + Richtung
+
     </p>
+
   </div>
 </template>
 
@@ -217,6 +275,9 @@ const ellipses = computed(() => {
 .legend .new { color: #b02a37; }
 .legend .adj { color: #1d6fbf; }
 .legend .ell { color: #1d6fbf; }
+.legend .line-solid { color: #1d6fbf; letter-spacing: -1px; }
+.legend .line-dash  { color: #1d6fbf; letter-spacing: 1px; }
+
 .label {
   paint-order: stroke;
   stroke: #fafafa;

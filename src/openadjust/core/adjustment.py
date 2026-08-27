@@ -28,6 +28,8 @@ class AdjustmentResult:
 
     # Adjusted coordinates: {point_id: (x, y, z)}
     adjusted_coords: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    orientations: dict = field(default_factory=dict)
+
 
     # Parameter corrections from last iteration
     corrections: Optional[np.ndarray] = None
@@ -172,6 +174,8 @@ class LeastSquaresAdjustment:
         # Get enabled observations and parameter index
         observations = self.network.get_enabled_observations()
         param_index = self.network.get_unknown_parameters()
+        self.network.initialize_orientations()
+
 
         n_obs = len(observations)
         n_params = len(param_index)
@@ -305,6 +309,9 @@ class LeastSquaresAdjustment:
         for point_id, point in self.network.points.items():
             self.result.adjusted_coords[point_id] = (point.x, point.y, point.z)
 
+        # Store adjusted orientations (in radians, per orientation group)
+        self.result.orientations = dict(self.network.orientations)
+
         # Print summary
         if self.verbose:
             self._print_summary()
@@ -367,6 +374,14 @@ class LeastSquaresAdjustment:
             # Handle scale parameter
             if param_name == "scale":
                 continue  # Scale is not applied to coordinates
+
+            if param_name.startswith("orientation_"):
+                group = param_name[len("orientation_"):]
+                self.network.orientations[group] = \
+                    self.network.orientations.get(group, 0.0) + x[idx]
+                continue
+
+
 
             parts = param_name.rsplit('_', 1)
             point_id = parts[0]
