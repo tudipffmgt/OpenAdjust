@@ -183,6 +183,37 @@ def _compute_error_ellipses(result: 'AdjustmentResult') -> dict:
 
     return ellipses
 
+def _compute_point_stds(result: 'AdjustmentResult') -> dict:
+    """Standardabweichungen (sx, sy, sz) je Punkt, aus vorhandener Methode."""
+    if result.Qxx is None or not result.param_index:
+        return {}
+    out = {}
+    for pid in result.adjusted_coords:
+        std = result.get_point_std(pid)
+        if std is None:
+            continue
+        out[pid] = {"sx": std[0], "sy": std[1], "sz": std[2]}
+    return out
+
+def _compute_normalized_residuals(result: 'AdjustmentResult') -> list:
+    """Normierte Verbesserungen w_i = |v_i| / (sigma_0 * sqrt(q_vivi)).
+
+    Reihenfolge entspricht den aktiven Beobachtungen (wie residuals).
+    None, wenn nicht bestimmbar (z.B. q_vivi <= 0 bei r=0 / unkontrolliert).
+    """
+    if result.residuals is None or result.Qvv is None:
+        return []
+    out = []
+    for i in range(len(result.residuals)):
+        try:
+            w = result.get_normalized_residual(i)
+        except Exception:
+            w = None
+        out.append(None if w is None else float(w))
+    return out
+
+
+
 
 def result_to_dict(result: AdjustmentResult) -> dict:
     """Serializes an AdjustmentResult into a JSON-ready dict."""
@@ -196,6 +227,8 @@ def result_to_dict(result: AdjustmentResult) -> dict:
             pid: list(xyz) for pid, xyz in result.adjusted_coords.items()
         },
         "error_ellipses": _compute_error_ellipses(result),
+        "point_std": _compute_point_stds(result),
+        "normalized_residuals": _compute_normalized_residuals(result),
         "param_index": result.param_index,
         "residuals": _arr(result.residuals),
         "corrections": _arr(result.corrections),
