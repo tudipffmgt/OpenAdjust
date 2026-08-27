@@ -40,6 +40,7 @@ const rows = computed(() => {
   const res = props.result?.residuals
   if (!res) return []
   const nv = props.result.normalized_residuals || []
+  const rn = props.result.redundancy_numbers || []
   const out = []
   // nur aktive Beobachtungen gehen in die Ausgleichung -> gleiche Reihenfolge
   const active = props.observations.filter(o => o.enabled !== false)
@@ -61,6 +62,7 @@ const rows = computed(() => {
       vUnit: isAngle ? 'mgon' : 'mm',
       w: w,                                  // normierte Verbesserung (dimensionslos)
       severity: severity(w),
+      ri: rn[i],                             // Redundanzanteil (0…1)
     })
   })
   return out
@@ -87,7 +89,8 @@ const f = (v, d = 2) => (v == null ? '–' : v.toFixed(d))
       <thead>
         <tr>
           <th>ID</th><th>Typ</th><th>Von</th><th>Nach</th>
-          <th>Beobachtung</th><th>v (Verbesserung)</th><th>NV (w)</th>
+          <th>Beobachtung</th><th>v (Verbesserung)</th>
+          <th>NV (w)</th><th>r (Red.anteil)</th>
         </tr>
       </thead>
       <tbody>
@@ -103,6 +106,9 @@ const f = (v, d = 2) => (v == null ? '–' : v.toFixed(d))
           <td :class="'nv-' + r.severity">
             {{ r.w == null ? '–' : f(Math.abs(r.w), 2) }}
           </td>
+          <td :class="{ 'ri-low': r.ri != null && r.ri < 0.3 }">
+            {{ r.ri == null ? '–' : f(r.ri, 2) }}
+          </td>
         </tr>
       </tbody>
     </table>
@@ -112,6 +118,10 @@ const f = (v, d = 2) => (v == null ? '–' : v.toFixed(d))
       Ampel: grün = unauffällig (&lt; {{ baardaLimit.toFixed(2) }}), gelb = grenzwertig,
       rot = grober Fehler wahrscheinlich (≥ {{ RED_LIMIT.toFixed(1) }}).
       Der grün/gelb-Übergang hängt von α₀ ab.
+    </p>
+    <p class="hint">
+      r = Redundanzanteil (0…1): wie gut die Beobachtung kontrolliert ist.
+      Kleine Werte (rot, &lt; 0.3) = schwach kontrolliert; Summe aller r = Gesamtredundanz.
     </p>
   </div>
 </template>
@@ -135,5 +145,7 @@ td.nv-ok     { background: #eaf6ee; color: #0d4a2f; font-weight: 600; }
 td.nv-warn   { background: #fff3cd; color: #7a5a00; font-weight: 700; }
 td.nv-exceed { background: #b02a37; color: #fff;    font-weight: 700; }
 td.nv-none   { color: #999; }
-</style>
 
+/* Schwach kontrollierte Beobachtung */
+td.ri-low { background: #fdeaec; color: #7a1c25; font-weight: 600; }
+</style>

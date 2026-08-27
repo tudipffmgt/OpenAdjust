@@ -219,6 +219,15 @@ def _compute_normalized_residuals(result: 'AdjustmentResult') -> list:
         out.append(None if w is None else float(w))
     return out
 
+def _compute_redundancy_numbers(result: 'AdjustmentResult') -> list:
+    """Redundanzanteile r_i = (Qvv * P)_ii je Beobachtung.
+    Summe aller r_i = Gesamtredundanz. r_i≈1: gut kontrolliert, r_i≈0: unkontrolliert.
+    """
+    if result.Qvv is None or result.weight_matrix is None:
+        return []
+    R = result.Qvv @ result.weight_matrix
+    return [float(R[i, i]) for i in range(R.shape[0])]
+
 
 
 
@@ -237,6 +246,7 @@ def result_to_dict(result: AdjustmentResult) -> dict:
         "error_ellipses": _compute_error_ellipses(result),
         "point_std": _compute_point_stds(result),
         "normalized_residuals": _compute_normalized_residuals(result),
+        "redundancy_numbers": _compute_redundancy_numbers(result),
         "param_index": result.param_index,
         "residuals": _arr(result.residuals),
         "corrections": _arr(result.corrections),

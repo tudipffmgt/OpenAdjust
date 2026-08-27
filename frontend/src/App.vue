@@ -18,6 +18,8 @@ const EXAMPLES = [
   { id: 'triangle_noisy', label: '1b) Streckennetz – Dreieck (verrauscht)' },
   { id: 'dir_small', label: '2) Strecken-/Richtungsnetz – klein (r=2)' },
   { id: 'dir_small_noisy', label: '2b) Strecken-/Richtungsnetz – klein (verrauscht)' },
+   { id: 'net7', label: '3) Lagenetz 7 Punkte (Pelzer, r=19)' }
+
 
   // später: '2) Strecken-/Richtungsnetz', '3) Tunnelnetz'
 ]
@@ -26,7 +28,8 @@ const selectedExample = ref('triangle')
 
 // true, wenn ein Beispiel mit Zufallsrauschen aktiv ist
 const isNoisy = computed(() => selectedExample.value === 'triangle_noisy' ||
-  selectedExample.value === 'dir_small_noisy')
+  selectedExample.value === 'dir_small_noisy' ||
+  selectedExample.value === 'net7')
 
 // Neues Messrauschen ziehen (wahres Netz bleibt, nur Messung neu simuliert)
 function resimulate() {
@@ -168,8 +171,78 @@ function makeNoisyDirectionNetwork() {
   }
 }
 
+function makeNetwork7() {
+  // Wahre Koordinaten (X=Nord, Y=Ost) – Festpunkte links, Netz spannt nach rechts
+  const TRUE = {
+    A:  [10, 20],  B:  [100, 10],           // Festpunkte
+    N1: [25, 85],  N2: [90, 95], N3: [50, 155],
+    N4: [30, 225], N5: [95, 235],           // Neupunkte
+  }
+  // Wahre Standpunkt-Orientierungen (gon), willkürlich gewählt
+  const O = { A: 30, B: 120, N1: 210, N2: 5, N3: 160, N4: 300, N5: 75 }
 
-const FACTORIES = { triangle: makeTriangle, triangle_noisy: makeNoisyTriangle, dir_small: makeDirectionNetwork,  dir_small_noisy: makeNoisyDirectionNetwork }
+  // Kantenplan (12 Kanten, teilvermascht): Strecke + Richtung beidseitig
+  const EDGES = [
+    ['A','B'], ['A','N1'], ['B','N1'], ['B','N2'],
+    ['N1','N2'], ['N1','N3'], ['N1','N4'],
+    ['N2','N3'], ['N2','N5'],
+    ['N3','N4'], ['N3','N5'], ['N4','N5'],
+  ]
+
+  const bearingGon = (fr, to) => {
+    let b = Math.atan2(TRUE[to][1] - TRUE[fr][1], TRUE[to][0] - TRUE[fr][0]) * 200 / Math.PI
+    return (b + 400) % 400
+  }
+  const dist = (fr, to) =>
+    Math.hypot(TRUE[to][0] - TRUE[fr][0], TRUE[to][1] - TRUE[fr][1])
+  const noise = (s) => {
+    const u1 = Math.random(), u2 = Math.random()
+    return s * Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
+  }
+
+  const sDir = 0.001, sDist = 0.003   // 1 mgon, 3 mm
+  const obs = []
+  for (const [p, q] of EDGES) {
+    // Strecke (einmal je Kante)
+    obs.push({
+      id: `d_${p}_${q}`, type: 'distance', station: p, target: q,
+      value: +(dist(p, q) + noise(sDist)).toFixed(4), std_dev: sDist, enabled: true,
+    })
+    // Richtung hin (Standpunkt p)
+    obs.push({
+      id: `r_${p}_${q}`, type: 'direction', station: p, target: q,
+      value: +(((bearingGon(p, q) - O[p]) + noise(sDir) + 400) % 400).toFixed(4),
+      std_dev: sDir, enabled: true,
+    })
+    // Richtung zurück (Standpunkt q) -> reziprok, Pelzer-Signatur voll/gestrichelt/voll
+    obs.push({
+      id: `r_${q}_${p}`, type: 'direction', station: q, target: p,
+      value: +(((bearingGon(q, p) - O[q]) + noise(sDir) + 400) % 400).toFixed(4),
+      std_dev: sDir, enabled: true,
+    })
+  }
+
+  return {
+    name: 'Lagenetz 7 Punkte (Pelzer)',
+    settings: { include_scale: false },
+    points: [
+      { id: 'A',  x: 10,  y: 20,  z: 0, fixed_x: true, fixed_y: true, fixed_z: true },
+      { id: 'B',  x: 100, y: 10,  z: 0, fixed_x: true, fixed_y: true, fixed_z: true },
+      // Näherungen nur leicht daneben (dm), damit Gauß-Newton sicher konvergiert
+      { id: 'N1', x: 25.2, y: 84.7, z: 0, fixed_z: true },
+      { id: 'N2', x: 89.6, y: 95.3, z: 0, fixed_z: true },
+      { id: 'N3', x: 50.3, y: 154.6, z: 0, fixed_z: true },
+      { id: 'N4', x: 29.5, y: 225.4, z: 0, fixed_z: true },
+      { id: 'N5', x: 95.4, y: 234.5, z: 0, fixed_z: true },
+    ],
+    observations: obs,
+  }
+}
+
+
+
+const FACTORIES = { triangle: makeTriangle, triangle_noisy: makeNoisyTriangle, dir_small: makeDirectionNetwork,  dir_small_noisy: makeNoisyDirectionNetwork,   net7: makeNetwork7,
+ }
 
 // Startnetz
 const network = ref(makeTriangle())
