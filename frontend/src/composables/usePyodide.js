@@ -16,12 +16,12 @@ async function _initPyodide() {
 
   const micropip = pyodide.pyimport('micropip')
   await micropip.install(
-    '/openadjust-0.1.0-py3-none-any.whl',
+    `${import.meta.env.BASE_URL}openadjust-0.1.0-py3-none-any.whl`,
     { keepGoing: true, deps: false }
   )
 
   // Bootstrap-Python laden und ausführen
-  const bootstrap = await (await fetch('/py/bootstrap.py')).text()
+  const bootstrap =   const bootstrap = await (await fetch(`${import.meta.env.BASE_URL}py/bootstrap.py`)).text()
   await pyodide.runPythonAsync(bootstrap)
 
   pyodideStatus.value = 'ready'
