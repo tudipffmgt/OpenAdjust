@@ -21,7 +21,7 @@ async function _initPyodide() {
   )
 
   // Bootstrap-Python laden und ausführen
-  const bootstrap =   const bootstrap = await (await fetch(`${import.meta.env.BASE_URL}py/bootstrap.py`)).text()
+  const bootstrap = await (await fetch(`${import.meta.env.BASE_URL}py/bootstrap.py`)).text()
   await pyodide.runPythonAsync(bootstrap)
 
   pyodideStatus.value = 'ready'
