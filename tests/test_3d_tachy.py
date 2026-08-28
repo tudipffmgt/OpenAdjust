@@ -407,8 +407,8 @@ class TestDirectionObservation:
         # Station at origin
         network.add_point(Point("P1", x=0.0, y=0.0, z=0.0,
                                 fixed_x=True, fixed_y=True, fixed_z=True))
-        # Target to the east (X direction)
-        network.add_point(Point("P2", x=100.0, y=0.0, z=0.0,
+        # Target to the east (Y direction, geodetic: X=North, Y=East)
+        network.add_point(Point("P2", x=0.0, y=100.0, z=0.0,
                                 fixed_x=True, fixed_y=True, fixed_z=True))
 
         from openadjust.models.direction import DirectionObservation
@@ -436,8 +436,8 @@ class TestDirectionObservation:
 
         network.add_point(Point("P1", x=0.0, y=0.0, z=0.0,
                                 fixed_x=True, fixed_y=True, fixed_z=True))
-        # Target to the north (Y direction)
-        network.add_point(Point("P2", x=0.0, y=100.0, z=0.0,
+        # Target to the north (X direction, geodetic: X=North, Y=East)
+        network.add_point(Point("P2", x=100.0, y=0.0, z=0.0,
                                 fixed_x=True, fixed_y=True, fixed_z=True))
 
         from openadjust.models.direction import DirectionObservation
